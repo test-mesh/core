@@ -1,0 +1,236 @@
+flow:
+  name: "E2E Order Creation Flow"
+  description: "Complete end-to-end test of order flow across all microservices with PostgreSQL and Kafka"
+
+  env:
+    DB_URL: "postgresql://root:admin@localhost:5432/postgres"
+    KAFKA_BROKERS: "localhost:9092"
+    USER_SERVICE_URL: "http://localhost:5001"
+    PRODUCT_SERVICE_URL: "http://localhost:5002"
+    ORDER_SERVICE_URL: "http://localhost:5003"
+    NOTIFICATION_SERVICE_URL: "http://localhost:5004"
+
+  setup:
+    # Clean up any data from previous runs
+    - id: cleanup_notifications
+      action: database_query
+      config:
+        connection: "${DB_URL}"
+        query: >
+          DELETE FROM notification_service.notifications
+          WHERE user_id IN (
+            SELECT id::text FROM user_service.users WHERE email = 'john@example.com'
+          )
+
+    - id: cleanup_orders
+      action: database_query
+      config:
+        connection: "${DB_URL}"
+        query: >
+          DELETE FROM order_service.order_items
+          WHERE order_id IN (
+            SELECT id FROM order_service.orders
+            WHERE user_id IN (SELECT id::text FROM user_service.users WHERE email = 'john@example.com')
+          )
+
+    - id: cleanup_order_records
+      action: database_query
+      config:
+        connection: "${DB_URL}"
+        query: >
+          DELETE FROM order_service.orders
+          WHERE user_id IN (SELECT id::text FROM user_service.users WHERE email = 'john@example.com')
+
+    - id: cleanup_products
+      action: database_query
+      config:
+        connection: "${DB_URL}"
+        query: "DELETE FROM product_service.products WHERE name = 'Test Widget'"
+
+    - id: cleanup_user
+      action: database_query
+      config:
+        connection: "${DB_URL}"
+        query: "DELETE FROM user_service.users WHERE email = 'john@example.com'"
+
+  steps:
+    # Step 1: Create a user
+    - id: create_user
+      action: http_request
+      config:
+        method: POST
+        url: "${USER_SERVICE_URL}/api/v1/users"
+        headers:
+          Content-Type: application/json
+        body:
+          name: "John Doe"
+          email: "john@example.com"
+      assert:
+        - status == 201
+        - body.id != nil
+        - body.email == "john@example.com"
+        - body.name == "John Doe"
+      output:
+        user_id: $.body.id
+
+    # Step 2: Verify user.created event in Kafka
+    - id: verify_user_event
+      action: kafka_consumer
+      config:
+        brokers: "${KAFKA_BROKERS}"
+        topic: user.created
+        group_id: testmesh-test
+        timeout: 15s
+        from_beginning: true
+      assert:
+        - len(messages) > 0
+
+    # Step 3: Verify user in PostgreSQL database
+    - id: verify_user_in_db
+      action: database_query
+      config:
+        connection: "${DB_URL}"
+        query: "SELECT * FROM user_service.users WHERE id = $1"
+        params: ["{{user_id}}"]
+      assert:
+        - row_count == 1
+        - rows[0].email == "john@example.com"
+        - rows[0].name == "John Doe"
+
+    # Step 4: Create a product
+    - id: create_product
+      action: http_request
+      config:
+        method: POST
+        url: "${PRODUCT_SERVICE_URL}/api/v1/products"
+        headers:
+          Content-Type: application/json
+        body:
+          name: "Test Widget"
+          description: "A test product"
+          price: 29.99
+          inventory: 100
+      assert:
+        - status == 201
+        - body.id != nil
+        - body.name == "Test Widget"
+        - body.price == 29.99
+        - body.inventory == 100
+      output:
+        product_id: $.body.id
+
+    # Step 5: Verify product in PostgreSQL database
+    - id: verify_product_in_db
+      action: database_query
+      config:
+        connection: "${DB_URL}"
+        query: "SELECT * FROM product_service.products WHERE id = $1"
+        params: ["{{product_id}}"]
+      assert:
+        - row_count == 1
+        - rows[0].name == "Test Widget"
+
+    # Step 6: Create an order (tests inter-service HTTP communication)
+    - id: create_order
+      action: http_request
+      config:
+        method: POST
+        url: "${ORDER_SERVICE_URL}/api/v1/orders"
+        headers:
+          Content-Type: application/json
+        body:
+          user_id: "{{user_id}}"
+          items:
+            - product_id: "{{product_id}}"
+              quantity: 2
+      assert:
+        - status == 201
+        - body.id != nil
+        - body.user_id == user_id
+        - body.total == 59.98
+        - len(body.items) == 1
+        - body.items[0].product_id == product_id
+        - body.items[0].quantity == 2
+      output:
+        order_id: $.body.id
+
+    # Step 7: Verify order.placed event in Kafka
+    - id: verify_order_event
+      action: kafka_consumer
+      config:
+        brokers: "${KAFKA_BROKERS}"
+        topic: order.placed
+        group_id: testmesh-test
+        timeout: 15s
+        from_beginning: true
+      assert:
+        - len(messages) > 0
+
+    # Step 8: Verify order in PostgreSQL database
+    - id: verify_order_in_db
+      action: database_query
+      config:
+        connection: "${DB_URL}"
+        query: "SELECT * FROM order_service.orders WHERE id = $1"
+        params: ["{{order_id}}"]
+      assert:
+        - row_count == 1
+        - rows[0].total == 59.98
+        - rows[0].status == "pending"
+
+    # Step 9: Verify order items in database
+    - id: verify_order_items_in_db
+      action: database_query
+      config:
+        connection: "${DB_URL}"
+        query: "SELECT * FROM order_service.order_items WHERE order_id = $1"
+        params: ["{{order_id}}"]
+      assert:
+        - row_count == 1
+        - rows[0].product_id == product_id
+        - rows[0].quantity == 2
+
+    # Step 10: Wait for notification service to process events
+    - id: wait_for_notifications
+      action: delay
+      config:
+        duration: 3s
+
+    # Step 11: Check notifications were created
+    - id: check_notifications
+      action: http_request
+      config:
+        method: GET
+        url: "${NOTIFICATION_SERVICE_URL}/api/v1/notifications/{{user_id}}"
+      assert:
+        - status == 200
+        - body.count >= 2
+
+    # Step 12: Verify notifications in PostgreSQL
+    - id: verify_notifications_in_db
+      action: database_query
+      config:
+        connection: "${DB_URL}"
+        query: "SELECT * FROM notification_service.notifications WHERE user_id = $1 ORDER BY created_at"
+        params: ["{{user_id}}"]
+      assert:
+        - row_count >= 2
+        - rows[0].type == "user.created"
+        - rows[1].type == "order.placed"
+
+    # Step 13: Wait for inventory update via Kafka
+    - id: wait_for_inventory_update
+      action: delay
+      config:
+        duration: 2s
+
+    # Step 14: Check product inventory decreased
+    - id: verify_inventory_decreased
+      action: database_query
+      config:
+        connection: "${DB_URL}"
+        query: "SELECT inventory FROM product_service.products WHERE id = $1"
+        params: ["{{product_id}}"]
+      assert:
+        - row_count == 1
+        - rows[0].inventory == 98

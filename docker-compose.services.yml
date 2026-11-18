@@ -1,0 +1,144 @@
+version: '3.8'
+
+# Demo Microservices for Testing TestMesh
+# Use this to run the example microservices for E2E testing
+# Run with: docker-compose -f docker-compose.services.yml up
+
+services:
+  # User Service (Microservice)
+  user-service:
+    build:
+      context: ./demo-services/user-service
+      dockerfile: Dockerfile
+    container_name: testmesh-user-service
+    ports:
+      - "${USER_SERVICE_PORT:-5001}:5001"
+    environment:
+      PORT: 5001
+      DB_HOST: ${DATABASE_HOST:-postgres}
+      DB_PORT: ${DATABASE_PORT:-5432}
+      DB_USER: ${DATABASE_USER:-root}
+      DB_PASSWORD: ${DATABASE_PASSWORD:-admin}
+      DB_NAME: ${DATABASE_DBNAME:-postgres}
+      DB_SCHEMA: user_service
+      DB_SSLMODE: ${DATABASE_SSLMODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+    networks:
+      - local-infra
+
+  # Product Service (Microservice)
+  product-service:
+    build:
+      context: ./demo-services/product-service
+      dockerfile: Dockerfile
+    container_name: testmesh-product-service
+    ports:
+      - "${PRODUCT_SERVICE_PORT:-5002}:5002"
+    environment:
+      PORT: 5002
+      DB_HOST: ${DATABASE_HOST:-postgres}
+      DB_PORT: ${DATABASE_PORT:-5432}
+      DB_USER: ${DATABASE_USER:-root}
+      DB_PASSWORD: ${DATABASE_PASSWORD:-admin}
+      DB_NAME: ${DATABASE_DBNAME:-postgres}
+      DB_SCHEMA: product_service
+      DB_SSLMODE: ${DATABASE_SSLMODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    networks:
+      - local-infra
+
+  # Order Service (Microservice)
+  order-service:
+    build:
+      context: ./demo-services/order-service
+      dockerfile: Dockerfile
+    container_name: testmesh-order-service
+    ports:
+      - "${ORDER_SERVICE_PORT:-5003}:5003"
+    environment:
+      PORT: 5003
+      DB_HOST: ${DATABASE_HOST:-postgres}
+      DB_PORT: ${DATABASE_PORT:-5432}
+      DB_USER: ${DATABASE_USER:-root}
+      DB_PASSWORD: ${DATABASE_PASSWORD:-admin}
+      DB_NAME: ${DATABASE_DBNAME:-postgres}
+      DB_SCHEMA: order_service
+      DB_SSLMODE: ${DATABASE_SSLMODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      USER_SERVICE_URL: http://${USER_SERVICE_HOST:-user-service}:${USER_SERVICE_PORT:-5001}
+      PRODUCT_SERVICE_URL: http://${PRODUCT_SERVICE_HOST:-product-service}:${PRODUCT_SERVICE_PORT:-5002}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-testmesh}
+    networks:
+      - local-infra
+
+  # Notification Service (Microservice)
+  notification-service:
+    build:
+      context: ./demo-services/notification-service
+      dockerfile: Dockerfile
+    container_name: testmesh-notification-service
+    ports:
+      - "${NOTIFICATION_SERVICE_PORT:-5004}:5004"
+    environment:
+      PORT: 5004
+      DB_HOST: ${DATABASE_HOST:-postgres}
+      DB_PORT: ${DATABASE_PORT:-5432}
+      DB_USER: ${DATABASE_USER:-root}
+      DB_PASSWORD: ${DATABASE_PASSWORD:-admin}
+      DB_NAME: ${DATABASE_DBNAME:-postgres}
+      DB_SCHEMA: notification_service
+      DB_SSLMODE: ${DATABASE_SSLMODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+    networks:
+      - local-infra
+
+  # Recommendation Service (gRPC :5005, HTTP :5006)
+  recommendation-service:
+    build:
+      context: ./demo-services/recommendation-service
+      dockerfile: Dockerfile
+    container_name: testmesh-recommendation-service
+    ports:
+      - "${RECOMMENDATION_GRPC_PORT:-5005}:5005"
+      - "${RECOMMENDATION_HTTP_PORT:-5006}:5006"
+    environment:
+      GRPC_PORT: 5005
+      PORT: 5006
+      DB_HOST: ${DATABASE_HOST:-postgres}
+      DB_PORT: ${DATABASE_PORT:-5432}
+      DB_USER: ${DATABASE_USER:-root}
+      DB_PASSWORD: ${DATABASE_PASSWORD:-admin}
+      DB_NAME: ${DATABASE_DBNAME:-postgres}
+      DB_SCHEMA: recommendation_service
+      DB_SSLMODE: ${DATABASE_SSLMODE:-disable}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-testmesh}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+    networks:
+      - local-infra
+    depends_on:
+      - order-service
+
+networks:
+  local-infra:
+    external: true
+    name: local-infra

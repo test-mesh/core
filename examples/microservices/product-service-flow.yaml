@@ -1,0 +1,117 @@
+flow:
+  name: "Product Service - CRUD & Inventory"
+  description: "Auto-generated E2E flow for product-service. Covers HTTP endpoints, database state, and event verification."
+
+  setup:
+    - id: setup_log
+      action: log
+      config:
+        message: "Starting E2E tests for product-service"
+
+
+  steps:
+    - id: health_check
+      action: http_request
+      config:
+        method: "GET"
+        url: "http://localhost:5002/health"
+      assert:
+        - "status == 200"
+
+    - id: create_product
+      action: http_request
+      config:
+        body:
+          price: 99.99
+          inventory: "test-inventory-{{RANDOM_ID}}"
+          name: "Test Product {{RANDOM_ID}}"
+          description: "Test product description {{RANDOM_ID}}"
+        method: "POST"
+        url: "http://localhost:5002/api/v1/products"
+        headers:
+          Content-Type: "application/json"
+      assert:
+        - "status == 201"
+        - "body.id != nil"
+      output:
+        product_id: "$.body.id"
+
+    - id: list_products
+      action: http_request
+      config:
+        method: "GET"
+        url: "http://localhost:5002/api/v1/products"
+      assert:
+        - "status == 200"
+
+    - id: get_product
+      action: http_request
+      config:
+        method: "GET"
+        url: "http://localhost:5002/api/v1/products/{{product_id}}"
+      assert:
+        - "status == 200"
+        - "body.id != nil"
+
+    - id: update_product
+      action: http_request
+      config:
+        method: "PUT"
+        url: "http://localhost:5002/api/v1/products/{{product_id}}/inventory"
+        headers:
+          Content-Type: "application/json"
+        body:
+          name: "Updated Product {{RANDOM_ID}}"
+          description: "Test product description {{RANDOM_ID}}"
+          price: 99.99
+          inventory: "test-inventory-{{RANDOM_ID}}"
+      assert:
+        - "status == 200"
+
+    - id: verify_db_product
+      action: database_query
+      config:
+        connection: "postgres://root:admin@localhost:5432/postgres?sslmode=disable"
+        query: "SELECT COUNT(*) as count FROM product_service.products"
+      assert:
+        - "row_count >= 1"
+
+    - id: verify_event_product_created
+      action: kafka_consumer
+      config:
+        brokers: "localhost:9092"
+        topic: "product.created"
+        group_id: "testmesh-e2e-verifier"
+        timeout: "10s"
+      assert:
+        - "len(messages) > 0"
+
+    - id: verify_event_product_inventory_changed
+      action: kafka_consumer
+      config:
+        brokers: "localhost:9092"
+        topic: "product.inventory.changed"
+        group_id: "testmesh-e2e-verifier"
+        timeout: "10s"
+      assert:
+        - "len(messages) > 0"
+
+    - id: not_found_product
+      action: http_request
+      config:
+        method: "GET"
+        url: "http://localhost:5002/api/v1/products/00000000-0000-0000-0000-000000000000"
+      assert:
+        - "status == 404 || status == 400"
+
+    - id: bad_request_product
+      action: http_request
+      config:
+        method: "POST"
+        url: "http://localhost:5002/api/v1/products"
+        headers:
+          Content-Type: "application/json"
+        body:
+      assert:
+        - "status == 400 || status == 422"
+

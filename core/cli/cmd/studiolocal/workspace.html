@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TestMesh Studio Free</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #10151c; color: #edf2f7; font: 16px system-ui; }
+  main { max-width: 76rem; padding: 2rem; margin: auto; }
+  h1 { margin: 0 0 1.5rem; font-size: 1.6rem; }
+  form, nav { display: flex; align-items: end; flex-wrap: wrap; gap: .6rem; margin-bottom: 1rem; }
+  label { display: grid; gap: .4rem; }
+  form label { flex: 1; min-width: 12rem; }
+  input, textarea, button { border-radius: .4rem; border: 1px solid #607183; background: #18222f; color: inherit; padding: .65rem; font: inherit; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  textarea { min-height: 55vh; resize: vertical; font: .9rem/1.6 ui-monospace, monospace; }
+  details { margin: .6rem 0; padding: .7rem; border: 1px solid #607183; border-radius: .4rem; }
+  img { max-width: 100%; max-height: 28rem; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  nav { margin-top: 1rem; }
+</style>
+<main>
+  <h1>TestMesh Studio Free</h1>
+  <form id="open">
+    <label>Workspace file <input id="path" placeholder="flows/checkout.yaml" required></label>
+    <button>Open</button>
+  </form>
+  <fieldset id="fields" hidden><legend>Step settings</legend><div id="controls"></div></fieldset>
+  <label>YAML <textarea id="source" spellcheck="false" disabled></textarea></label>
+  <nav aria-label="Flow actions">
+    <label>Environment file <input id="env" placeholder="Default from flow" disabled></label>
+    <button data-action="validate" disabled>Validate</button>
+    <button data-action="save" disabled>Save</button>
+    <button data-action="run" disabled>Run</button>
+  </nav>
+  <p id="status" role="status"></p>
+  <pre id="output" aria-label="Output"></pre>
+  <section id="results" aria-label="Run results" hidden></section>
+</main>
+<script>
+  const pathField = document.querySelector('#path');
+  const editor = document.querySelector('#source');
+  const status = document.querySelector('#status');
+  const env = document.querySelector('#env');
+  const results = document.querySelector('#results');
+  const output = document.querySelector('#output');
+  const actions = document.querySelectorAll('[data-action]');
+  const openButton = document.querySelector('#open button');
+  let path = '', revision = '', saved = '', newline = '\n';
+  const fields = document.querySelector('#fields');
+  const controls = document.querySelector('#controls');
+  function renderFields(items = []) {
+    fields.hidden = items.length === 0;
+    controls.replaceChildren();
+    for (const field of items) {
+      const label = document.createElement('label');
+      label.textContent = field.label;
+      const input = document.createElement('input');
+      input.value = field.value;
+      label.append(input);
+      controls.append(label);
+      input.addEventListener('change', () => {
+        if (!/^[a-zA-Z0-9.-]+$/.test(input.value)) {
+          input.value = field.value;
+          return;
+        }
+        const lines = editor.value.split('\n');
+        const line = Array.from(lines[field.line - 1] || '');
+        if (line.slice(field.column - 1, field.column - 1 + field.value.length).join('') !== field.value) return;
+        line.splice(field.column - 1, field.value.length, ...input.value);
+        lines[field.line - 1] = line.join('');
+        editor.value = lines.join('\n');
+        renderFields();
+      });
+    }
+  }
+  editor.addEventListener('input', () => renderFields());
+  function renderRun(run) {
+    results.replaceChildren();
+    results.hidden = !run;
+    if (!run) return;
+    const heading = document.createElement('h2');
+    heading.textContent = `Run ${run.status} · ${run.passed} passed · ${run.failed} failed · ${run.duration_ms} ms`;
+    results.append(heading);
+    if (run.error) {
+      const error = document.createElement('p');
+      error.textContent = run.error;
+      results.append(error);
+    }
+    for (const step of run.steps || []) {
+      const details = document.createElement('details');
+      details.open = step.status === 'failed';
+      const summary = document.createElement('summary');
+      summary.textContent = `${step.phase} · ${step.step_name || step.step_id} · ${step.status} · ${step.duration_ms} ms`;
+      details.append(summary);
+      if (step.error) {
+        const error = document.createElement('p');
+        error.textContent = step.error;
+        details.append(error);
+      }
+      if (step.output) {
+        const {screenshot, ...data} = step.output;
+        if (typeof screenshot === 'string' && /^[A-Za-z0-9+/]+=*$/.test(screenshot)) {
+          const image = document.createElement('img');
+          image.alt = 'Browser step screenshot';
+          image.src = 'data:image/png;base64,' + screenshot;
+          details.append(image);
+          const download = document.createElement('a');
+          download.href = image.src;
+          download.download = 'step-screenshot.png';
+          download.textContent = 'Download screenshot';
+          details.append(document.createElement('br'), download);
+        }
+        const evidence = document.createElement('pre');
+        evidence.textContent = JSON.stringify(data, null, 2);
+        details.append(evidence);
+      }
+      results.append(details);
+    }
+  }
+  async function request(action) {
+    const requestedPath = action === 'open' ? pathField.value : path;
+    if (action === 'open' && editor.value !== saved && !confirm('Discard unsaved edits?')) return;
+    const source = editor.value.replaceAll('\n', newline);
+    openButton.disabled = editor.disabled = env.disabled = true;
+    actions.forEach(button => button.disabled = true);
+    status.textContent = 'Working…';
+    output.textContent = '';
+    if (action === 'run' || action === 'open') renderRun();
+    try {
+      const response = await fetch('/workspace', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action, path: requestedPath, source, revision, envFile: env.value.trim()})
+      });
+      if (!response.ok) throw new Error((await response.text()).trim());
+      const result = await response.json();
+      if (action === 'open') {
+        path = requestedPath;
+        newline = result.source.includes('\r\n') ? '\r\n' : '\n';
+        editor.value = result.source;
+        saved = editor.value;
+      }
+      if (action === 'save' && !result.failed) saved = editor.value;
+      if (result.revision) {
+        revision = result.revision;
+        renderFields(result.fields);
+      }
+      status.textContent = result.failed ? 'Action failed' : path;
+      output.textContent = result.output || '';
+      if (result.run) renderRun(result.run);
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      openButton.disabled = false;
+      editor.disabled = env.disabled = !path;
+      actions.forEach(button => button.disabled = !path);
+    }
+  }
+  document.querySelector('#open').addEventListener('submit', event => {
+    event.preventDefault();
+    request('open');
+  });
+  actions.forEach(button => button.addEventListener('click', () => request(button.dataset.action)));
+</script>
